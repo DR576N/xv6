@@ -1,3 +1,8 @@
+#ifndef KERNEL_X86_H
+#define KERNEL_X86_H
+
+#include "types.h"
+
 // Routines to let C code use special x86 instructions.
 
 static inline uchar
@@ -182,3 +187,5 @@ struct trapframe {
 	ushort ss;
 	ushort padding6;
 };
+
+#endif // KERNEL_X86_H

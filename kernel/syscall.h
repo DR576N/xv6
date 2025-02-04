@@ -1,3 +1,6 @@
+#ifndef KERNEL_SYSCALL_H
+#define KERNEL_SYSCALL_H
+
 // System call numbers
 #define SYS_fork    1
 #define SYS_exit    2
@@ -20,3 +23,5 @@
 #define SYS_link   19
 #define SYS_mkdir  20
 #define SYS_close  21
+
+#endif // KERNEL_SYSCALL_H

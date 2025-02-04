@@ -1,3 +1,8 @@
+#ifndef KERNEL_KBD_H
+#define KERNEL_KBD_H
+
+#include "types.h"
+
 // PC keyboard interface constants
 
 #define KBSTATP         0x64    // kbd controller status port(I)
@@ -110,3 +115,4 @@ static uchar ctlmap[256] =
 	[0xD2] KEY_INS,   [0xD3] KEY_DEL
 };
 
+#endif // KERNEL_KBD_H

@@ -1,3 +1,8 @@
+#ifndef USER_USER_H
+#define USER_USER_H
+
+#include <kernel/types.h>
+
 struct stat;
 struct rtcdate;
 
@@ -40,3 +45,5 @@ void* memset(void*, int, uint);
 void* malloc(uint);
 void free(void*);
 int atoi(const char*);
+
+#endif // USER_USER_H

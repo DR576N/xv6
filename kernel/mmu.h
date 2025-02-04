@@ -1,3 +1,6 @@
+#ifndef KERNEL_MMU_H
+#define KERNEL_MMU_H
+
 // This file contains definitions for the
 // x86 memory management unit (MMU).
 
@@ -110,6 +113,8 @@
 
 #ifndef __ASSEMBLER__
 
+#include "types.h"
+
 // Task state segment format
 struct taskstate {
 	uint link;         // Old ts selector
@@ -171,3 +176,5 @@ struct taskstate {
 }
 
 #endif
+
+#endif // KERNEL_MMU_H

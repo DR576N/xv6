@@ -1,3 +1,6 @@
+#ifndef KERNEL_ASM_H
+#define KERNEL_ASM_H
+
 //
 // assembler macros to create x86 segments
 //
@@ -16,3 +19,5 @@
 #define STA_X     0x8       // Executable segment
 #define STA_W     0x2       // Writeable (non-executable segments)
 #define STA_R     0x2       // Readable (executable segments)
+
+#endif // KERNEL_ASM_H
