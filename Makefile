@@ -81,6 +81,7 @@ STRIPNOTES = -R '.note' -R '.note.*'
 OBJDUMP = $(TOOLPREFIX)objdump
 CFLAGS = -mgeneral-regs-only -fno-pic -static -fno-builtin -fno-strict-aliasing -O2 -Wall -ggdb -m32 -fno-omit-frame-pointer -I.
 CFLAGS += $(shell $(CC) -fno-stack-protector -E -x c /dev/null >/dev/null 2>&1 && echo -fno-stack-protector)
+CFLAGS += -ffreestanding
 ASFLAGS = -m32 -I. -gdwarf-2 -Wa,-divide
 # FreeBSD ld wants ``elf_i386_fbsd''
 LDFLAGS += -m $(shell $(LD) -V | grep elf_i386 2>/dev/null | head -n 1)
@@ -123,21 +124,21 @@ xv6memfs.img: $B/bootblock $K/kernelmemfs
 
 $B/bootblock: $B/bootasm.S $B/bootmain.c
 	$(MKDEPDIR)
-	$(CC) $(CFLAGS) -MF .deps/$(@D)-1 -fno-pic -O -nostdinc -I. -c $B/bootmain.c -o $B/bootmain.o
-	$(CC) $(CFLAGS) -MF .deps/$(@D)-2 -fno-pic -nostdinc -I. -c $B/bootasm.S -o $B/bootasm.o
+	$(CC) $(CFLAGS) -MF .deps/$(@D)-1 -fno-pic -O -I. -c $B/bootmain.c -o $B/bootmain.o
+	$(CC) $(CFLAGS) -MF .deps/$(@D)-2 -fno-pic -I. -c $B/bootasm.S -o $B/bootasm.o
 	$(LD) $(LDFLAGS) -N -e start -Ttext 0x7C00 -o $B/bootblock.o $B/bootasm.o $B/bootmain.o
 	$(OBJCOPY) $(STRIPNOTES) -S -O binary -j .text $B/bootblock.o $B/bootblock
 	$T/sign.pl $B/bootblock
 
 $K/entryother: $K/entryother.S
 	$(MKDEPDIR)
-	$(CC) $(CFLAGS) -fno-pic -nostdinc -I. -c $K/entryother.S -o $K/entryother.o
+	$(CC) $(CFLAGS) -fno-pic -I. -c $K/entryother.S -o $K/entryother.o
 	$(LD) $(LDFLAGS) -N -e start -Ttext 0x7000 -o $B/bootblockother.o $K/entryother.o
 	$(OBJCOPY) $(STRIPNOTES) -S -O binary -j .text $B/bootblockother.o $K/entryother
 
 $U/initcode: $U/initcode.S
 	$(MKDEPDIR)
-	$(CC) $(CFLAGS) -nostdinc -I. -c $U/initcode.S -o $U/initcode.o
+	$(CC) $(CFLAGS) -I. -c $U/initcode.S -o $U/initcode.o
 	$(LD) $(LDFLAGS) -N -e start -Ttext 0 -o $U/initcode.out $U/initcode.o
 	$(OBJCOPY) -S $(STRIPNOTES) -O binary $U/initcode.out $U/initcode
 
