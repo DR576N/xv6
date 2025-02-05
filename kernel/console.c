@@ -11,6 +11,8 @@
 #include "proc.h"
 #include "x86.h"
 
+#include <stdarg.h>
+
 static void consputc(int);
 
 static int panicked = 0;
@@ -50,8 +52,8 @@ void
 cprintf(char *fmt, ...)
 {
 	int i, c, locking;
-	uint *argp;
 	char *s;
+	va_list args;
 
 	locking = cons.locking;
 	if(locking)
@@ -60,7 +62,8 @@ cprintf(char *fmt, ...)
 	if (fmt == 0)
 		panic("null fmt");
 
-	argp = (uint*)(void*)(&fmt + 1);
+	va_start(args, fmt);
+
 	for(i = 0; (c = fmt[i] & 0xff) != 0; i++){
 		if(c != '%'){
 			consputc(c);
@@ -71,14 +74,27 @@ cprintf(char *fmt, ...)
 			break;
 		switch(c){
 		case 'd':
-			printint(*argp++, 10, 1);
+		  printint(va_arg(args, int), 10, 1);
 			break;
 		case 'x':
-		case 'p':
-			printint(*argp++, 16, 0);
+			printint(va_arg(args, int), 16, 0);
+			break;
+		case 'p': {
+			void* arg = va_arg(args, void*);
+			int reinterpreted;
+			memmove(&reinterpreted, &arg, sizeof(arg));
+
+#if __STDC_VERSION__ > 201112L
+			_Static_assert(sizeof(arg) == sizeof(reinterpreted),
+				       "we're assuming ILP32");
+			// HACK: printint also assumes 2C, but whatever
+#endif
+
+			printint(reinterpreted, 16, 0);
+		}
 			break;
 		case 's':
-			if((s = (char*)*argp++) == 0)
+			if((s = va_arg(args, char*)) == 0)
 				s = "(null)";
 			for(; *s; s++)
 				consputc(*s);
@@ -93,6 +109,8 @@ cprintf(char *fmt, ...)
 			break;
 		}
 	}
+
+	va_end(args);
 
 	if(locking)
 		release(&cons.lock);
