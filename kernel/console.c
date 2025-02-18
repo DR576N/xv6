@@ -10,6 +10,7 @@
 #include "memlayout.h"
 #include "proc.h"
 #include "x86.h"
+#include "printf.h"
 
 #include <stdarg.h>
 
@@ -22,37 +23,11 @@ static struct {
 	int locking;
 } cons;
 
-static void
-printint(int xx, int base, int sign)
-{
-	static char digits[] = "0123456789abcdef";
-	char buf[16];
-	int i;
-	uint x;
-
-	if(sign && (sign = xx < 0))
-		x = -xx;
-	else
-		x = xx;
-
-	i = 0;
-	do{
-		buf[i++] = digits[x % base];
-	}while((x /= base) != 0);
-
-	if(sign)
-		buf[i++] = '-';
-
-	while(--i >= 0)
-		consputc(buf[i]);
-}
-
 // Print to the console. only understands %d, %x, %p, %s.
 void
 cprintf(char *fmt, ...)
 {
-	int i, c, locking;
-	char *s;
+	int locking;
 	va_list args;
 
 	locking = cons.locking;
@@ -64,51 +39,7 @@ cprintf(char *fmt, ...)
 
 	va_start(args, fmt);
 
-	for(i = 0; (c = fmt[i] & 0xff) != 0; i++){
-		if(c != '%'){
-			consputc(c);
-			continue;
-		}
-		c = fmt[++i] & 0xff;
-		if(c == 0)
-			break;
-		switch(c){
-		case 'd':
-		  printint(va_arg(args, int), 10, 1);
-			break;
-		case 'x':
-			printint(va_arg(args, int), 16, 0);
-			break;
-		case 'p': {
-			void* arg = va_arg(args, void*);
-			int reinterpreted;
-			memmove(&reinterpreted, &arg, sizeof(arg));
-
-#if __STDC_VERSION__ > 201112L
-			_Static_assert(sizeof(arg) == sizeof(reinterpreted),
-				       "we're assuming ILP32");
-			// HACK: printint also assumes 2C, but whatever
-#endif
-
-			printint(reinterpreted, 16, 0);
-		}
-			break;
-		case 's':
-			if((s = va_arg(args, char*)) == 0)
-				s = "(null)";
-			for(; *s; s++)
-				consputc(*s);
-			break;
-		case '%':
-			consputc('%');
-			break;
-		default:
-			// Print unknown % sequence to draw attention.
-			consputc('%');
-			consputc(c);
-			break;
-		}
-	}
+	fnvprintf(consputc, fmt, args);
 
 	va_end(args);
 

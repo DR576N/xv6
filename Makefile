@@ -32,6 +32,7 @@ OBJS = \
 	$K/uart.o\
 	$K/vectors.o\
 	$K/vm.o\
+	$K/printf.o\
 
 # Cross-compiling (e.g., on Mac OS X)
 # TOOLPREFIX = i386-jos-elf
@@ -222,7 +223,7 @@ QEMUOPTS = -drive file=fs.img,index=1,media=disk,format=raw -drive file=xv6.img,
 
 .PHONY: qemu
 qemu: fs.img xv6.img
-	$(QEMU) $(QEMUOPTS)
+	$(QEMU) -debugcon stdio $(QEMUOPTS)
 
 .PHONY: qemu-memfs
 qemu-memfs: xv6memfs.img
@@ -238,7 +239,7 @@ qemu-nox: fs.img xv6.img
 .PHONY: qemu-gdb
 qemu-gdb: fs.img xv6.img .gdbinit
 	@echo "*** Now run 'gdb'." 1>&2
-	$(QEMU) $(QEMUOPTS) -S $(QEMUGDB)
+	$(QEMU) -debugcon stdio $(QEMUOPTS) -S $(QEMUGDB)
 
 .PHONY: qemu-nox-gdb
 qemu-nox-gdb: fs.img xv6.img .gdbinit
