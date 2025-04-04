@@ -26,9 +26,10 @@ struct superblock {
 	uint bmapstart;    // Block number of first free map block
 };
 
-#define NDIRECT 12
+// ***IZMENA***
+#define NDIRECT 11
 #define NINDIRECT (BSIZE / sizeof(uint))
-#define MAXFILE (NDIRECT + NINDIRECT)
+#define MAXFILE (NDIRECT + NINDIRECT + NINDIRECT*NINDIRECT) // IZMENA
 
 // On-disk inode structure
 struct dinode {
@@ -37,7 +38,7 @@ struct dinode {
 	short minor;          // Minor device number (T_DEV only)
 	short nlink;          // Number of links to inode in file system
 	uint size;            // Size of file (bytes)
-	uint addrs[NDIRECT+1];   // Data block addresses
+	uint addrs[NDIRECT+2];   // Data block addresses
 };
 
 // Inodes per block.
@@ -50,7 +51,7 @@ struct dinode {
 #define BPB           (BSIZE*8)
 
 // Block of free map containing bit for block b
-#define BBLOCK(b, sb) (b/BPB + sb.bmapstart)
+#define BBLOCK(b, sb) ((b)/BPB + sb.bmapstart)
 
 // Directory is a file containing a sequence of dirent structures.
 #define DIRSIZ 14
@@ -59,5 +60,7 @@ struct dirent {
 	ushort inum;
 	char name[DIRSIZ];
 };
+
+extern int key;
 
 #endif // KERNEL_FS_H

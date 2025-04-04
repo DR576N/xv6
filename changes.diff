@@ -1,0 +1,556 @@
+diff --git a/Makefile b/Makefile
+index 7f050be..fe4ac9d 100644
+--- a/Makefile
++++ b/Makefile
+@@ -197,6 +197,10 @@ UPROGS=\
+ 	$U/_usertests\
+ 	$U/_wc\
+ 	$U/_zombie\
++	$U/_setkey\
++	$U/_encr\
++	$U/_decr\
++	$U/_blockwriter\
+ 
+ fs.img: $T/mkfs README $(UPROGS)
+ 	$T/mkfs fs.img README $(UPROGS)
+diff --git a/kernel/console.c b/kernel/console.c
+index 1fe485c..04f898a 100644
+--- a/kernel/console.c
++++ b/kernel/console.c
+@@ -17,6 +17,7 @@
+ static void consputc(int);
+ 
+ static int panicked = 0;
++int echo_enabled = 1;
+ 
+ static struct {
+ 	struct spinlock lock;
+@@ -160,7 +161,11 @@ consoleintr(int (*getc)(void))
+ 			if(c != 0 && input.e-input.r < INPUT_BUF){
+ 				c = (c == '\r') ? '\n' : c;
+ 				input.buf[input.e++ % INPUT_BUF] = c;
+-				consputc(c);
++				if(echo_enabled == 0 && c != '\n'){
++					consputc('*');
++				} else {
++					consputc(c);
++				}
+ 				if(c == '\n' || c == C('D') || input.e == input.r+INPUT_BUF){
+ 					input.w = input.e;
+ 					wakeup(&input.r);
+diff --git a/kernel/file.h b/kernel/file.h
+index a2d44b9..41b8c93 100644
+--- a/kernel/file.h
++++ b/kernel/file.h
+@@ -15,7 +15,7 @@ struct file {
+ 	uint off;
+ };
+ 
+-
++// ***IZMENA***
+ // in-memory copy of an inode
+ struct inode {
+ 	uint dev;           // Device number
+@@ -28,8 +28,9 @@ struct inode {
+ 	short major;
+ 	short minor;
+ 	short nlink;
++	uint encrypted;
+ 	uint size;
+-	uint addrs[NDIRECT+1];
++	uint addrs[NDIRECT+2];
+ };
+ 
+ // table mapping major device number to
+diff --git a/kernel/fs.c b/kernel/fs.c
+index 0e16381..09b2e78 100644
+--- a/kernel/fs.c
++++ b/kernel/fs.c
+@@ -25,6 +25,19 @@ static void itrunc(struct inode*);
+ // only one device
+ struct superblock sb;
+ 
++int encription_key = -1;
++
++// Funkcija za enkripciju jednog karaktera (Caesar šifra)
++char caesar_encrypt_char(char c) {
++	return (char)((c + encription_key) % 256);
++}
++
++// Funkcija za dekripciju jednog karaktera (inverzna Caesar šifra)
++char caesar_decrypt_char(char c) {
++	return (char)((c - encription_key + 256) % 256);
++}
++
++
+ // Read the super block.
+ void
+ readsb(int dev, struct superblock *sb)
+@@ -392,6 +405,43 @@ bmap(struct inode *ip, uint bn)
+ 		return addr;
+ 	}
+ 
++	bn -= NINDIRECT;
++
++	// Double indirektni (blokovi 139-16523)
++	if (bn < NINDIRECT * NINDIRECT) {
++		uint idx1 = bn / NINDIRECT;  // Indeks u prvom nivou indirekcije
++		uint idx2 = bn % NINDIRECT;  // Indeks u drugom nivou
++
++		// Alociraj double indirektni blok (prvi nivo)
++		if ((addr = ip->addrs[NDIRECT + 1]) == 0) {
++			ip->addrs[NDIRECT + 1] = addr = balloc(ip->dev);
++		}
++
++		// Čitaj prvi nivo indirekcije
++		bp = bread(ip->dev, addr);
++		a = (uint*)bp->data;
++
++		// Alociraj drugi nivo indirekcije
++		if ((addr = a[idx1]) == 0) {
++			a[idx1] = addr = balloc(ip->dev);
++			log_write(bp);
++		}
++		brelse(bp);
++
++		// Čitaj drugi nivo indirekcije
++		bp = bread(ip->dev, addr);
++		a = (uint*)bp->data;
++
++		// Alociraj konačni blok
++		if ((addr = a[idx2]) == 0) {
++			a[idx2] = addr = balloc(ip->dev);
++			log_write(bp);
++		}
++		brelse(bp);
++		return addr;
++	}
++
++
+ 	panic("bmap: out of range");
+ }
+ 
+@@ -426,6 +476,28 @@ itrunc(struct inode *ip)
+ 		ip->addrs[NDIRECT] = 0;
+ 	}
+ 
++	if(ip->addrs[NDIRECT + 1]) {
++		uint dindirect = ip->addrs[NDIRECT + 1];
++		ip->addrs[NDIRECT + 1] = 0;
++		struct buf *bp = bread(ip->dev, dindirect);
++		uint *a = (uint*)bp->data;
++		for(int i = 0; i < NINDIRECT; i++) {
++			if(a[i]) {
++				struct buf *bp2 = bread(ip->dev, a[i]);
++				uint *a2 = (uint*)bp2->data;
++				for(int j = 0; j < NINDIRECT; j++) {
++					if(a2[j])
++						bfree(ip->dev, a2[j]);
++				}
++				brelse(bp2);
++				bfree(ip->dev, a[i]);
++				a[i] = 0;
++			}
++		}
++		brelse(bp);
++		bfree(ip->dev, dindirect);
++	}
++
+ 	ip->size = 0;
+ 	iupdate(ip);
+ }
+@@ -449,6 +521,7 @@ readi(struct inode *ip, char *dst, uint off, uint n)
+ {
+ 	uint tot, m;
+ 	struct buf *bp;
++	char tmp[BSIZE];
+ 
+ 	if(ip->type == T_DEV){
+ 		if(ip->major < 0 || ip->major >= NDEV || !devsw[ip->major].read)
+@@ -464,7 +537,17 @@ readi(struct inode *ip, char *dst, uint off, uint n)
+ 	for(tot=0; tot<n; tot+=m, off+=m, dst+=m){
+ 		bp = bread(ip->dev, bmap(ip, off/BSIZE));
+ 		m = min(n - tot, BSIZE - off%BSIZE);
+-		memmove(dst, bp->data + off%BSIZE, m);
++		// Kopiraj podatke iz bloka u tmp i dekriptuj ako je potrebno
++		memmove(tmp, bp->data + off%BSIZE, m);
++
++		if(ip->type == T_FILE && ip->encrypted == 1) {  // Enkriptovan fajl
++			for(int i = 0; i < m; i++)
++				tmp[i] = caesar_decrypt_char(tmp[i]);
++		}
++
++		// Kopiraj dekriptovane podatke u korisnički bafer
++		memmove(dst, tmp, m);
++
+ 		brelse(bp);
+ 	}
+ 	return n;
+@@ -477,6 +560,7 @@ writei(struct inode *ip, char *src, uint off, uint n)
+ {
+ 	uint tot, m;
+ 	struct buf *bp;
++	char tmp[BSIZE];
+ 
+ 	if(ip->type == T_DEV){
+ 		if(ip->major < 0 || ip->major >= NDEV || !devsw[ip->major].write)
+@@ -492,7 +576,18 @@ writei(struct inode *ip, char *src, uint off, uint n)
+ 	for(tot=0; tot<n; tot+=m, off+=m, src+=m){
+ 		bp = bread(ip->dev, bmap(ip, off/BSIZE));
+ 		m = min(n - tot, BSIZE - off%BSIZE);
+-		memmove(bp->data + off%BSIZE, src, m);
++
++		// Kopiraj podatke iz korisničkog bafera u tmp i enkriptuj ako je potrebno
++		memmove(tmp, src, m);
++
++		if(ip->type == T_FILE && ip->encrypted == 1) {  // Enkriptovan fajl
++			for(int i = 0; i < m; i++)
++				tmp[i] = caesar_encrypt_char(tmp[i]);
++		}
++
++		// Kopiraj enkriptovane podatke u disk bafer
++		memmove(bp->data + off%BSIZE, tmp, m);
++
+ 		log_write(bp);
+ 		brelse(bp);
+ 	}
+diff --git a/kernel/fs.h b/kernel/fs.h
+index 084a1dc..bb45234 100644
+--- a/kernel/fs.h
++++ b/kernel/fs.h
+@@ -26,9 +26,10 @@ struct superblock {
+ 	uint bmapstart;    // Block number of first free map block
+ };
+ 
+-#define NDIRECT 12
++// ***IZMENA***
++#define NDIRECT 11
+ #define NINDIRECT (BSIZE / sizeof(uint))
+-#define MAXFILE (NDIRECT + NINDIRECT)
++#define MAXFILE (NDIRECT + NINDIRECT + NINDIRECT*NINDIRECT) // IZMENA
+ 
+ // On-disk inode structure
+ struct dinode {
+@@ -37,7 +38,7 @@ struct dinode {
+ 	short minor;          // Minor device number (T_DEV only)
+ 	short nlink;          // Number of links to inode in file system
+ 	uint size;            // Size of file (bytes)
+-	uint addrs[NDIRECT+1];   // Data block addresses
++	uint addrs[NDIRECT+2];   // Data block addresses
+ };
+ 
+ // Inodes per block.
+@@ -50,7 +51,7 @@ struct dinode {
+ #define BPB           (BSIZE*8)
+ 
+ // Block of free map containing bit for block b
+-#define BBLOCK(b, sb) (b/BPB + sb.bmapstart)
++#define BBLOCK(b, sb) ((b)/BPB + sb.bmapstart)
+ 
+ // Directory is a file containing a sequence of dirent structures.
+ #define DIRSIZ 14
+@@ -60,4 +61,6 @@ struct dirent {
+ 	char name[DIRSIZ];
+ };
+ 
++extern int key;
++
+ #endif // KERNEL_FS_H
+diff --git a/kernel/param.h b/kernel/param.h
+index f200831..deef683 100644
+--- a/kernel/param.h
++++ b/kernel/param.h
+@@ -13,6 +13,6 @@
+ #define MAXOPBLOCKS  10  // max # of blocks any FS op writes
+ #define LOGSIZE      (MAXOPBLOCKS*3)  // max data blocks in on-disk log
+ #define NBUF         (MAXOPBLOCKS*3)  // size of disk block cache
+-#define FSSIZE       1000  // size of file system in blocks
++#define FSSIZE       10000  // size of file system in blocks
+ 
+ #endif // KERNEL_PARAM_H
+diff --git a/kernel/syscall.c b/kernel/syscall.c
+index e9e48d3..c42c242 100644
+--- a/kernel/syscall.c
++++ b/kernel/syscall.c
+@@ -100,6 +100,11 @@ extern int sys_unlink(void);
+ extern int sys_wait(void);
+ extern int sys_write(void);
+ extern int sys_uptime(void);
++// ***IZMENA***
++extern int sys_setkey(void);
++extern int sys_setecho(void);
++extern int sys_encr(void);
++extern int sys_decr(void);
+ 
+ static int (*syscalls[])(void) = {
+ [SYS_fork]    sys_fork,
+@@ -123,6 +128,10 @@ static int (*syscalls[])(void) = {
+ [SYS_link]    sys_link,
+ [SYS_mkdir]   sys_mkdir,
+ [SYS_close]   sys_close,
++[SYS_setkey]  sys_setkey,
++[SYS_setecho] sys_setecho,
++[SYS_encr]	  sys_encr,
++[SYS_decr]	  sys_decr,
+ };
+ 
+ void
+diff --git a/kernel/syscall.h b/kernel/syscall.h
+index 444c09f..9c57799 100644
+--- a/kernel/syscall.h
++++ b/kernel/syscall.h
+@@ -11,17 +11,21 @@
+ #define SYS_exec    7
+ #define SYS_fstat   8
+ #define SYS_chdir   9
+-#define SYS_dup    10
+-#define SYS_getpid 11
+-#define SYS_sbrk   12
+-#define SYS_sleep  13
+-#define SYS_uptime 14
+-#define SYS_open   15
+-#define SYS_write  16
+-#define SYS_mknod  17
+-#define SYS_unlink 18
+-#define SYS_link   19
+-#define SYS_mkdir  20
+-#define SYS_close  21
++#define SYS_dup     10
++#define SYS_getpid  11
++#define SYS_sbrk    12
++#define SYS_sleep   13
++#define SYS_uptime  14
++#define SYS_open    15
++#define SYS_write   16
++#define SYS_mknod   17
++#define SYS_unlink  18
++#define SYS_link    19
++#define SYS_mkdir   20
++#define SYS_close   21
++#define SYS_setkey  22
++#define SYS_setecho 23
++#define SYS_encr    24
++#define SYS_decr    25
+ 
+ #endif // KERNEL_SYSCALL_H
+diff --git a/kernel/sysfile.c b/kernel/sysfile.c
+index 37aac0e..324a1fd 100644
+--- a/kernel/sysfile.c
++++ b/kernel/sysfile.c
+@@ -13,6 +13,12 @@
+ #include "file.h"
+ #include "fcntl.h"
+ 
++extern int encription_key;
++extern int echo_enabled;
++
++extern char caesar_encrypt_char(char c);
++extern char caesar_decrypt_char(char c);
++
+ // Fetch the nth word-sized system call argument as a file descriptor
+ // and return both the descriptor and the corresponding struct file.
+ static int
+@@ -63,6 +69,7 @@ sys_dup(void)
+ 	return fd;
+ }
+ 
++// ***IZMENA***
+ int
+ sys_read(void)
+ {
+@@ -72,9 +79,17 @@ sys_read(void)
+ 
+ 	if(argfd(0, 0, &f) < 0 || argint(2, &n) < 0 || argptr(1, &p, n) < 0)
+ 		return -1;
+-	return fileread(f, p, n);
++	int ret = fileread(f, p, n);
++	// Ako je fajl enkriptovan (ip->major == 1) i key postavljen, izvrši dekripciju
++	if(f->ip->major == 1 && encription_key >= 0) {
++		for(int i = 0; i < ret; i++){
++			p[i] = caesar_decrypt_char(p[i]);
++		}
++	}
++	return ret;
+ }
+ 
++// ***IZMENA***
+ int
+ sys_write(void)
+ {
+@@ -84,6 +99,17 @@ sys_write(void)
+ 
+ 	if(argfd(0, 0, &f) < 0 || argint(2, &n) < 0 || argptr(1, &p, n) < 0)
+ 		return -1;
++
++	if(f->ip->major == 1 && encription_key >= 0) {
++		char *localbuf = kalloc();
++		memmove(localbuf, p, n);
++		for(int i = 0; i < n; i++){
++			localbuf[i] = caesar_encrypt_char(localbuf[i]);
++		}
++		int ret = filewrite(f, localbuf, n);
++		kfree(localbuf);
++		return ret;
++	}
+ 	return filewrite(f, p, n);
+ }
+ 
+@@ -438,3 +464,130 @@ sys_pipe(void)
+ 	fd[1] = fd1;
+ 	return 0;
+ }
++
++// ***IZMENA***
++int
++sys_encr(void)
++{
++	int fd;
++	struct file *f;
++
++	if(argfd(0, &fd, &f) < 0)
++		return -1;
++	if(f->type != FD_INODE || f->ip->type == T_DEV)
++		return -2;
++	if(f->ip->encrypted == 1)
++		return -3;
++	if(encription_key == -1)
++		return -1;
++
++	ilock(f->ip);
++
++	// Enkriptuj fajl – iteriraj kroz fajl blok po blok
++	char buf[BSIZE];
++	uint off = 0, n;
++	cprintf("(ENCR) current key is %d\n", encription_key);
++	while(off < f->ip->size) {
++		n = (f->ip->size - off) < BSIZE ? (f->ip->size - off) : BSIZE;
++		if(readi(f->ip, buf, off, n) != n){
++			iunlock(f->ip);
++			return -1;
++		}
++
++		// Enkripcija bloka
++		for(uint i = 0; i < n; i++){
++			buf[i] = caesar_encrypt_char(buf[i]);
++		}
++		if(writei(f->ip, buf, off, n) != n){
++			iunlock(f->ip);
++			return -1;
++		}
++
++		off += n;
++	}
++	// Označi fajl kao enkriptovan (npr. ip->ecnrypted = 1)
++	f->ip->encrypted = 1;
++	iupdate(f->ip);
++	iunlock(f->ip);
++	return 0;
++}
++
++// ***IZMENA***
++int
++sys_decr(void)
++{
++	int fd;
++	struct file *f;
++
++	// Preuzmi file descriptor iz argumenata
++	if(argint(0, &fd) < 0)
++		return -1;
++	f = myproc()->ofile[fd];
++	if(f == 0)
++		return -1;
++
++	// Provera da li je globalni ključ postavljen
++	if(encription_key < 0)
++		return -1;  // Ključ nije postavljen
++
++		// Fajl tipa T_DEV se ne može dekriptovati
++	if(f->type == T_DEV)
++		return -2;
++
++	// Ako fajl nije enkriptovan, vraća se -3
++	if(f->ip->encrypted == 0)
++		return -3;
++
++	// Iteriraj kroz fajl blok po blok i dekriptuj sadržaj
++	ilock(f->ip);
++	char buf[BSIZE];
++	uint off = 0, n;
++	while(off < f->ip->size) {
++		n = (f->ip->size - off) < BSIZE ? (f->ip->size - off) : BSIZE;
++		if(readi(f->ip, buf, off, n) != n)
++			return -1;
++		for(uint i = 0; i < n; i++){
++			buf[i] = caesar_decrypt_char(buf[i]);
++		}
++		if(writei(f->ip, buf, off, n) != n)
++			return -1;
++		off += n;
++	}
++
++	// Označi fajl kao dekriptovanim (npr. postavi encrypted na 0)
++	f->ip->encrypted = 0;
++	iupdate(f->ip);
++	iunlock(f->ip);
++	return 0;
++}
++
++// ***IZMENA***
++int sys_setkey(void) {
++	int k;
++	if(argint(0, &k) < 0) {
++		return -1;  // Greška pri preuzimanju argumenta
++	}else if(k < 0) {
++		return -1;  // Ključ mora biti nenegativan
++	}
++	encription_key = k;
++	e9printf("(SYSSETKEY) key is set to %d\n", encription_key);
++	return 0;
++}
++
++// ***IZMENA***
++int
++sys_setecho(void)
++{
++	int do_echo;
++	// Preuzmi argument iz korisničkog prostora.
++	if(argint(0, &do_echo) < 0)
++		return -1;
++
++	// Dozvoljeni su samo argumenti 0 ili 1.
++	if(do_echo != 0 && do_echo != 1)
++		return -1;
++
++	// Postavi globalnu promenljivu echo_enabled.
++	echo_enabled = do_echo;
++	return 0;
++}
+diff --git a/user/user.h b/user/user.h
+index 825fb42..5a11d90 100644
+--- a/user/user.h
++++ b/user/user.h
+@@ -28,6 +28,11 @@ int getpid(void);
+ char* sbrk(int);
+ int sleep(int);
+ int uptime(void);
++// novi sistemski pozivi // ***IZMENA***
++int setkey(int);
++int setecho(int);
++int encr(int);
++int decr(int);
+ 
+ // ulib.c
+ int stat(const char*, struct stat*);
+diff --git a/user/usys.S b/user/usys.S
+index 41b2cf2..06cada5 100644
+--- a/user/usys.S
++++ b/user/usys.S
+@@ -29,3 +29,7 @@ SYSCALL(getpid)
+ SYSCALL(sbrk)
+ SYSCALL(sleep)
+ SYSCALL(uptime)
++SYSCALL(setkey)
++SYSCALL(setecho)
++SYSCALL(encr)
++SYSCALL(decr)

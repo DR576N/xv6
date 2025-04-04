@@ -17,6 +17,7 @@
 static void consputc(int);
 
 static int panicked = 0;
+int echo_enabled = 1;
 
 static struct {
 	struct spinlock lock;
@@ -160,7 +161,11 @@ consoleintr(int (*getc)(void))
 			if(c != 0 && input.e-input.r < INPUT_BUF){
 				c = (c == '\r') ? '\n' : c;
 				input.buf[input.e++ % INPUT_BUF] = c;
-				consputc(c);
+				if(echo_enabled == 0 && c != '\n'){
+					consputc('*');
+				} else {
+					consputc(c);
+				}
 				if(c == '\n' || c == C('D') || input.e == input.r+INPUT_BUF){
 					input.w = input.e;
 					wakeup(&input.r);

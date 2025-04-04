@@ -15,7 +15,7 @@ struct file {
 	uint off;
 };
 
-
+// ***IZMENA***
 // in-memory copy of an inode
 struct inode {
 	uint dev;           // Device number
@@ -28,8 +28,9 @@ struct inode {
 	short major;
 	short minor;
 	short nlink;
+	uint encrypted;
 	uint size;
-	uint addrs[NDIRECT+1];
+	uint addrs[NDIRECT+2];
 };
 
 // table mapping major device number to

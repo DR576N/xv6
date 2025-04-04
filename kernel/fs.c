@@ -25,6 +25,19 @@ static void itrunc(struct inode*);
 // only one device
 struct superblock sb;
 
+int encription_key = -1;
+
+// Funkcija za enkripciju jednog karaktera (Caesar šifra)
+char caesar_encrypt_char(char c) {
+	return (char)((c + encription_key) % 256);
+}
+
+// Funkcija za dekripciju jednog karaktera (inverzna Caesar šifra)
+char caesar_decrypt_char(char c) {
+	return (char)((c - encription_key + 256) % 256);
+}
+
+
 // Read the super block.
 void
 readsb(int dev, struct superblock *sb)
@@ -392,6 +405,43 @@ bmap(struct inode *ip, uint bn)
 		return addr;
 	}
 
+	bn -= NINDIRECT;
+
+	// Double indirektni (blokovi 139-16523)
+	if (bn < NINDIRECT * NINDIRECT) {
+		uint idx1 = bn / NINDIRECT;  // Indeks u prvom nivou indirekcije
+		uint idx2 = bn % NINDIRECT;  // Indeks u drugom nivou
+
+		// Alociraj double indirektni blok (prvi nivo)
+		if ((addr = ip->addrs[NDIRECT + 1]) == 0) {
+			ip->addrs[NDIRECT + 1] = addr = balloc(ip->dev);
+		}
+
+		// Čitaj prvi nivo indirekcije
+		bp = bread(ip->dev, addr);
+		a = (uint*)bp->data;
+
+		// Alociraj drugi nivo indirekcije
+		if ((addr = a[idx1]) == 0) {
+			a[idx1] = addr = balloc(ip->dev);
+			log_write(bp);
+		}
+		brelse(bp);
+
+		// Čitaj drugi nivo indirekcije
+		bp = bread(ip->dev, addr);
+		a = (uint*)bp->data;
+
+		// Alociraj konačni blok
+		if ((addr = a[idx2]) == 0) {
+			a[idx2] = addr = balloc(ip->dev);
+			log_write(bp);
+		}
+		brelse(bp);
+		return addr;
+	}
+
+
 	panic("bmap: out of range");
 }
 
@@ -426,6 +476,28 @@ itrunc(struct inode *ip)
 		ip->addrs[NDIRECT] = 0;
 	}
 
+	if(ip->addrs[NDIRECT + 1]) {
+		uint dindirect = ip->addrs[NDIRECT + 1];
+		ip->addrs[NDIRECT + 1] = 0;
+		struct buf *bp = bread(ip->dev, dindirect);
+		uint *a = (uint*)bp->data;
+		for(int i = 0; i < NINDIRECT; i++) {
+			if(a[i]) {
+				struct buf *bp2 = bread(ip->dev, a[i]);
+				uint *a2 = (uint*)bp2->data;
+				for(int j = 0; j < NINDIRECT; j++) {
+					if(a2[j])
+						bfree(ip->dev, a2[j]);
+				}
+				brelse(bp2);
+				bfree(ip->dev, a[i]);
+				a[i] = 0;
+			}
+		}
+		brelse(bp);
+		bfree(ip->dev, dindirect);
+	}
+
 	ip->size = 0;
 	iupdate(ip);
 }
@@ -449,6 +521,7 @@ readi(struct inode *ip, char *dst, uint off, uint n)
 {
 	uint tot, m;
 	struct buf *bp;
+	char tmp[BSIZE];
 
 	if(ip->type == T_DEV){
 		if(ip->major < 0 || ip->major >= NDEV || !devsw[ip->major].read)
@@ -464,7 +537,17 @@ readi(struct inode *ip, char *dst, uint off, uint n)
 	for(tot=0; tot<n; tot+=m, off+=m, dst+=m){
 		bp = bread(ip->dev, bmap(ip, off/BSIZE));
 		m = min(n - tot, BSIZE - off%BSIZE);
-		memmove(dst, bp->data + off%BSIZE, m);
+		// Kopiraj podatke iz bloka u tmp i dekriptuj ako je potrebno
+		memmove(tmp, bp->data + off%BSIZE, m);
+
+		if(ip->type == T_FILE && ip->encrypted == 1) {  // Enkriptovan fajl
+			for(int i = 0; i < m; i++)
+				tmp[i] = caesar_decrypt_char(tmp[i]);
+		}
+
+		// Kopiraj dekriptovane podatke u korisnički bafer
+		memmove(dst, tmp, m);
+
 		brelse(bp);
 	}
 	return n;
@@ -477,6 +560,7 @@ writei(struct inode *ip, char *src, uint off, uint n)
 {
 	uint tot, m;
 	struct buf *bp;
+	char tmp[BSIZE];
 
 	if(ip->type == T_DEV){
 		if(ip->major < 0 || ip->major >= NDEV || !devsw[ip->major].write)
@@ -492,7 +576,18 @@ writei(struct inode *ip, char *src, uint off, uint n)
 	for(tot=0; tot<n; tot+=m, off+=m, src+=m){
 		bp = bread(ip->dev, bmap(ip, off/BSIZE));
 		m = min(n - tot, BSIZE - off%BSIZE);
-		memmove(bp->data + off%BSIZE, src, m);
+
+		// Kopiraj podatke iz korisničkog bafera u tmp i enkriptuj ako je potrebno
+		memmove(tmp, src, m);
+
+		if(ip->type == T_FILE && ip->encrypted == 1) {  // Enkriptovan fajl
+			for(int i = 0; i < m; i++)
+				tmp[i] = caesar_encrypt_char(tmp[i]);
+		}
+
+		// Kopiraj enkriptovane podatke u disk bafer
+		memmove(bp->data + off%BSIZE, tmp, m);
+
 		log_write(bp);
 		brelse(bp);
 	}

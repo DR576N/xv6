@@ -197,6 +197,10 @@ UPROGS=\
 	$U/_usertests\
 	$U/_wc\
 	$U/_zombie\
+	$U/_setkey\
+	$U/_encr\
+	$U/_decr\
+	$U/_blockwriter\
 
 fs.img: $T/mkfs README $(UPROGS)
 	$T/mkfs fs.img README $(UPROGS)

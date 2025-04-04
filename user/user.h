@@ -28,6 +28,11 @@ int getpid(void);
 char* sbrk(int);
 int sleep(int);
 int uptime(void);
+// novi sistemski pozivi // ***IZMENA***
+int setkey(int);
+int setecho(int);
+int encr(int);
+int decr(int);
 
 // ulib.c
 int stat(const char*, struct stat*);

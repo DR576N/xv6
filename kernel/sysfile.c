@@ -13,6 +13,12 @@
 #include "file.h"
 #include "fcntl.h"
 
+extern int encription_key;
+extern int echo_enabled;
+
+extern char caesar_encrypt_char(char c);
+extern char caesar_decrypt_char(char c);
+
 // Fetch the nth word-sized system call argument as a file descriptor
 // and return both the descriptor and the corresponding struct file.
 static int
@@ -63,6 +69,7 @@ sys_dup(void)
 	return fd;
 }
 
+// ***IZMENA***
 int
 sys_read(void)
 {
@@ -72,9 +79,17 @@ sys_read(void)
 
 	if(argfd(0, 0, &f) < 0 || argint(2, &n) < 0 || argptr(1, &p, n) < 0)
 		return -1;
-	return fileread(f, p, n);
+	int ret = fileread(f, p, n);
+	// Ako je fajl enkriptovan (ip->major == 1) i key postavljen, izvrši dekripciju
+	if(f->ip->major == 1 && encription_key >= 0) {
+		for(int i = 0; i < ret; i++){
+			p[i] = caesar_decrypt_char(p[i]);
+		}
+	}
+	return ret;
 }
 
+// ***IZMENA***
 int
 sys_write(void)
 {
@@ -84,6 +99,17 @@ sys_write(void)
 
 	if(argfd(0, 0, &f) < 0 || argint(2, &n) < 0 || argptr(1, &p, n) < 0)
 		return -1;
+
+	if(f->ip->major == 1 && encription_key >= 0) {
+		char *localbuf = kalloc();
+		memmove(localbuf, p, n);
+		for(int i = 0; i < n; i++){
+			localbuf[i] = caesar_encrypt_char(localbuf[i]);
+		}
+		int ret = filewrite(f, localbuf, n);
+		kfree(localbuf);
+		return ret;
+	}
 	return filewrite(f, p, n);
 }
 
@@ -436,5 +462,128 @@ sys_pipe(void)
 	}
 	fd[0] = fd0;
 	fd[1] = fd1;
+	return 0;
+}
+
+// ***IZMENA***
+int
+sys_encr(void)
+{
+	int fd;
+	struct file *f;
+
+	if(argfd(0, &fd, &f) < 0)
+		return -1;
+	if(f->type != FD_INODE || f->ip->type == T_DEV)
+		return -2;
+	if(f->ip->encrypted == 1)
+		return -3;
+	if(encription_key == -1)
+		return -1;
+
+	ilock(f->ip);
+
+	// Enkriptuj fajl – iteriraj kroz fajl blok po blok
+	char buf[BSIZE];
+	uint off = 0, n;
+	cprintf("(ENCR) current key is %d\n", encription_key);
+	while(off < f->ip->size) {
+		n = (f->ip->size - off) < BSIZE ? (f->ip->size - off) : BSIZE;
+		if(readi(f->ip, buf, off, n) != n){
+			iunlock(f->ip);
+			return -1;
+		}
+
+		// Enkripcija bloka
+		for(uint i = 0; i < n; i++){
+			buf[i] = caesar_encrypt_char(buf[i]);
+		}
+		if(writei(f->ip, buf, off, n) != n){
+			iunlock(f->ip);
+			return -1;
+		}
+
+		off += n;
+	}
+	// Označi fajl kao enkriptovan (npr. ip->ecnrypted = 1)
+	f->ip->encrypted = 1;
+	iupdate(f->ip);
+	iunlock(f->ip);
+	return 0;
+}
+
+// ***IZMENA***
+int
+sys_decr(void)
+{
+	int fd;
+	struct file *f;
+
+	// Preuzmi file descriptor iz argumenata
+	if(argint(0, &fd) < 0)
+		return -1;
+	f = myproc()->ofile[fd];
+	if(f == 0)
+		return -1;
+
+	// Provera da li je globalni ključ postavljen
+	if(encription_key < 0)
+		return -1;  // Ključ nije postavljen
+
+		// Fajl tipa T_DEV se ne može dekriptovati
+	if(f->type == T_DEV)
+		return -2;
+
+	// Ako fajl nije enkriptovan, vraća se -3
+	if(f->ip->encrypted == 0)
+		return -3;
+
+	ilock(f->ip);
+	char buf[BSIZE];
+	uint off = 0, n;
+	while(off < f->ip->size) {
+		n = (f->ip->size - off) < BSIZE ? (f->ip->size - off) : BSIZE;
+		if(readi(f->ip, buf, off, n) != n)
+			return -1;
+		for(uint i = 0; i < n; i++){
+			buf[i] = caesar_decrypt_char(buf[i]);
+		}
+		if(writei(f->ip, buf, off, n) != n)
+			return -1;
+		off += n;
+	}
+	f->ip->encrypted = 0;
+	iupdate(f->ip);
+	iunlock(f->ip);
+	return 0;
+}
+
+// ***IZMENA***
+int sys_setkey(void) {
+	int key;
+	if(argint(0, &key) < 0) {
+		return -1;
+	}else if(key < 0) {
+		return -1;
+	}
+	encription_key = key;
+	e9printf("(SYSSETKEY) key is set to %d\n", encription_key);
+	return 0;
+}
+
+// ***IZMENA***
+int
+sys_setecho(void)
+{
+	int do_echo;
+
+	if(argint(0, &do_echo) < 0)
+		return -1;
+
+
+	if(do_echo != 0 && do_echo != 1)
+		return -1;
+
+	echo_enabled = do_echo;
 	return 0;
 }
